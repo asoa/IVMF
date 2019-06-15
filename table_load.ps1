@@ -80,6 +80,7 @@ Function update_database {
                     $log_string = ('{0} {1} {2}: {3}' -f $_.Service_Episode_ID,$_.cleaned2ob,$_.flag_clientntwk,'Updated org')
                     write_log $log_string 0
                 }
+                # network and organization diff -> insert new network and org records
                 elseif (($_.originalnetwork -ne $_.currentnetwork) -and ($_.Current_Organization -ne $_.Originating_Organization)) {
                     $str = 'network and organization changed, inserting new network and organization record'
                     Write-Debug ("{0}: {1}" -f $_.Service_Episode_ID,$str)
@@ -137,8 +138,106 @@ $episode_insert = @"
 
 
 Function init_db {
-     Write-Host 'Dropping and re-creating Tables'
-     #TODO
+# get tablenames from db
+$sqlcmd = @"
+    USE SERVES
+    SELECT table_name [name]
+    FROM INFORMATION_SCHEMA.TABLES
+    GO
+"@
+$table_names = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object{$_.Item(0)} | Where-Object{$_ -notin 'sysdiagrams'}
+
+# iterate over each name in table_names array and drop the table
+# TODO: code works  but does not drop tables with fk reference, need to drop fk references first
+<#
+$table_names | ForEach-Object {
+    $drop_table = @"
+        USE SERVES
+        GO
+        IF OBJECT_ID('$_', 'U') IS NOT NULL
+        DROP TABLE $_
+        GO
+"@
+    Invoke-Sqlcmd -Query $drop_table -ServerInstance $SQL_SERVER
+    Write-Host ("Dropped table: {0}" -f $_)
+}
+#>
+$drop_table = @"
+    USE SERVES
+    DROP TABLE network_episode
+    DROP TABLE episode
+    DROP TABLE network_organization
+    DROP TABLE network
+    DROP TABLE organization
+"@
+    Invoke-Sqlcmd -Query $drop_table -ServerInstance $SQL_SERVER
+    Write-Host ("Dropped table: {0}" -f $_)
+
+# create all databases
+$sqlcmd = @"        
+    USE SERVES
+    CREATE TABLE episode
+    (
+        [service_episode_id] NVARCHAR(50) NOT NULL,
+        [client_id] NVARCHAR(50) NULL,
+        [outcomegrouped] NVARCHAR(50),
+        [service_type_grouped] NVARCHAR(50),
+        [source] NVARCHAR(50),
+        [started_with] NVARCHAR(50),
+        [ended_with] NVARCHAR(50),
+        [outcome] NVARCHAR(50),
+        [resolution] NVARCHAR(50),
+        [network_scope] NVARCHAR(50)
+
+        CONSTRAINT pk_episodes PRIMARY KEY CLUSTERED (service_episode_id) 
+    );
+    CREATE TABLE network
+    (
+        [network_id] INT NOT NULL,
+        [network_name] VARCHAR(20),
+        [network_region] INT,
+        [network_state] VARCHAR(2),
+        [network_state_enc] INT
+
+        CONSTRAINT pk_network PRIMARY KEY CLUSTERED (network_id)
+    );
+    CREATE TABLE network_episode
+    (
+        [network_episode_id] INT IDENTITY(1,1) NOT NULL,
+        [service_episode_id] NVARCHAR(50) NOT NULL,
+        [network_id] INT NULL,
+        [originalnetwork] INT
+
+        CONSTRAINT pk_network_episode PRIMARY KEY CLUSTERED (network_episode_id),
+        CONSTRAINT pk_service_episode_ID FOREIGN KEY (service_episode_id) REFERENCES episode
+    );
+    CREATE TABLE organization
+    (
+        [organization_name] NVARCHAR(50) NOT NULL,
+        [organization_created_at] INT,
+        [organization_updated_at] INT,
+        [program_id] NVARCHAR(50),
+        [program_name] NVARCHAR(50),
+        [program_created_at] INT,
+        [program_updated_at] INT,
+        [service_type_program_provides] NVARCHAR(50)
+
+        CONSTRAINT pk_current_organization_name PRIMARY KEY CLUSTERED (organization_name)
+    );
+    CREATE TABLE network_organization
+    (
+        [network_organization_id] INT IDENTITY(1,1) NOT NULL,
+        [network_id] INT NULL,
+        [organization_name] NVARCHAR(50),
+        [originating_organization] NVARCHAR(50)
+
+        CONSTRAINT pk_network_organization PRIMARY KEY CLUSTERED (network_organization_id),
+        CONSTRAINT fk_network_id FOREIGN KEY (network_id) REFERENCES network_episode,
+        CONSTRAINT fk_current_organization FOREIGN KEY (organization_name) REFERENCES organization
+    );
+"@
+    Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER
+     
 }
 
 Function generate_report {
