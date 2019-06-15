@@ -4,21 +4,23 @@ $DebugPreference = 'Continue'  # change to SilentlyContinue to remove debugging 
 $LOG_FILE_SUCCESS = 'H:\ETL_log_success' + (Get-Date).ToString("yyyy-MM-dd-HHmm") + '.log'
 $LOG_FILE_FAILURE = 'H:\ETL_log_failure' + (Get-Date).ToString("yyyy-MM-dd-HHmm") + '.log'
 
+# TODO: import lookup_load script
+
 Function check_record_exist {
     # sends query to db to check if $id exists
     Param ([string] $id)
-$sqlcmd = @"
-    USE SERVES
-    IF EXISTS (SELECT Service_Episode_ID FROM Episodes WHERE Service_Episode_ID = '$id')
-    select 1
-    ELSE 
-    select 0
-"@
+    $sqlcmd = @"
+        USE SERVES
+        IF EXISTS (SELECT Service_Episode_ID FROM se_episode WHERE service_episode_id = '$id')
+        select 1
+        ELSE 
+        select 0
+"@  # don't indent the `@` or the preceding sql will fail
     $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object {$_.Item(0)}
     return $result
 }
 
-Function write_log {
+function write_log {
    Param (
        [Parameter(Mandatory=$true, Position=0)] 
        [string]$logstring, 
@@ -33,7 +35,7 @@ Function write_log {
    else {Add-content $LOG_FILE_FAILURE -value $logstring}
 }
 
-Function update_database {
+function update_database {
     <#
         Checks first to see if episodeid exists, orig/current network diff, orig/current org diff
         case 1: if episodeid does not exist, insert the episode, network, and org record
@@ -49,7 +51,7 @@ Function update_database {
 
     Begin {  # import source csv into csv object and create array of all (including duplicate) records from Episodes table 
         $rows = Import-Csv -Path $FILE_PATH
-        $sql_object = Invoke-Sqlcmd -ServerInstance $SQL_SERVER -Query "USE SERVES; SELECT Service_Episode_ID FROM Episodes" 
+        $sql_object = Invoke-Sqlcmd -ServerInstance $SQL_SERVER -Query "USE SERVES; SELECT service_episode_id FROM se_episode" 
         $service_episode_ids = @($sql_object | ForEach-Object {$_.Service_Episode_ID})
         
     }
@@ -89,37 +91,44 @@ Function update_database {
                 }
             }
             elseif ($exist -eq 0) {  # if record isn't in db, insert it
-$episode_insert = @"
-    use SERVES
+                $episode_insert = @"
+                    use SERVES
 
-    Declare @Service_Episode_ID nvarchar(50) = '$($_.Service_Episode_ID)'
-    Declare @Client_ID nvarchar(50) = '$($_.Client_ID)'
-    Declare @outcomegrouped nvarchar(50) = '$($_.outcomegrouped)'
-    Declare @Service_Type_Grouped nvarchar(50) = '$($_.Service_Type_Grouped)'
-    Declare @Source nvarchar(50) = '$($_.Source)'
-    Declare @Started_With nvarchar(50) = '$($_.Started_With)'
-    Declare @Ended_With nvarchar(50) = '$($_.Ended_With)'
-    Declare @Outcome nvarchar(50) = '$($_.Outcome)'
-    Declare @Resolution nvarchar(50) = '$($_.Resolution)'
-    Declare @Network_Scope nvarchar(50) = '$($_.Network_Scope)'
+                    Declare @service_episode_id nvarchar(50) = '$($_.Service_Episode_ID)'
+                    Declare @client_id nvarchar(50) = '$($_.Client_ID)'
+                    Declare @outcomegrouped nvarchar(50) = '$($_.outcomegrouped)'
+                    Declare @service_type_grouped nvarchar(50) = '$($_.Service_Type_Grouped)'
+                    Declare @source nvarchar(50) = '$($_.Source)'
+                    Declare @started_with nvarchar(50) = '$($_.Started_With)'
+                    Declare @ended_With nvarchar(50) = '$($_.Ended_With)'
+                    Declare @outcome nvarchar(50) = '$($_.Outcome)'
+                    Declare @resolution nvarchar(50) = '$($_.Resolution)'
+                    Declare @network_scope nvarchar(50) = '$($_.Network_Scope)'
 
-    Declare @Network_Episode_ID int = NULL
-    Declare @currentnetwork int = '$($_.currentnetwork)'
-    Declare @originalnetwork int = '$($_.originalnetwork)'
-    Declare @Network_ID int = '$($_.currentnetwork)'
+                    Declare @network_episode_id int = NULL
+                    Declare @currentnetwork int = '$($_.currentnetwork)'
+                    Declare @originalnetwork int = '$($_.originalnetwork)'
+                    Declare @network_id int = '$($_.currentnetwork)'
 
-    INSERT INTO Episodes(Service_Episode_ID, Client_ID, outcomegrouped, Service_Type_Grouped, [Source], Started_With, Ended_With, Outcome, Resolution, Network_Scope) 
-    VALUES (@Service_Episode_ID, @Client_ID, @outcomegrouped, @Service_Type_Grouped, @Source, @Started_With, @Ended_With, @Outcome, @Resolution, @Network_Scope) 
-    SET @SE_ID = scope_identity()
-    GO
+                    Declare @organization_name nvarchar(50) = '$($_.Current_Organization)'
+                    Declare @originating_organization nvarchar(50) = '$($_.Originating_Organization)'
 
-    INSERT INTO Network_Episode(Service_Episode_ID, Network_ID, originalnetwork) 
-    VALUES(@Service_Episode_ID, @Network_ID, @originalnetwork)
-    SET @Network_Episode_ID = scope_identity()
-    GO
+                    INSERT INTO se_episode(service_episode_id, client_id, outcomegrouped, service_type_grouped, [source], started_with, ended_with, outcome, resolution, network_scope) 
+                    VALUES (@service_episode_id, @client_id, @outcomegrouped, @service_type_grouped, @source, @started_with, @ended_with, @outcome, @resolution, @network_scope) 
+                    --SET @SE_ID = scope_identity()
+                    GO
 
+                    INSERT INTO se_network_episode(service_episode_id, network_id, originalnetwork) 
+                    VALUES(@service_episode_id, @network_id, @originalnetwork)
+                    --SET @network_episode_id = scope_identity()
+                    GO
 
-"@
+                    INSERT INTO se_network_organization(network_id, organization_name, originating_organization)
+                    VALUES(@network_id, @organization_name, @originating_organization)
+                    GO
+
+"@  # don't indent the `@` or the preceding sql will fail
+
                 Invoke-Sqlcmd -Query $episode_insert -ServerInstance $SQL_SERVER
                 $str = 'Wrote to db'
                 Write-Debug ("{0}: {1}" -f $str,$_.Service_Episode_ID)
@@ -137,128 +146,171 @@ $episode_insert = @"
 } # end update_database
 
 
-Function init_db {
-# get tablenames from db
-$sqlcmd = @"
-    USE SERVES
-    SELECT table_name [name]
-    FROM INFORMATION_SCHEMA.TABLES
-    GO
-"@
-$table_names = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object{$_.Item(0)} | Where-Object{$_ -notin 'sysdiagrams'}
+function init_db {
+    <#
+        .Description
+        iterate over each name in table_names array and drop the table
+        
+        TODO: code works but does not drop tables with fk reference, need to drop fk references first 
+    #>
 
-# iterate over each name in table_names array and drop the table
-# TODO: code works  but does not drop tables with fk reference, need to drop fk references first
-<#
-$table_names | ForEach-Object {
-    $drop_table = @"
+    # get tablenames from db
+    $sqlcmd = @"
         USE SERVES
+        SELECT table_name [name]
+        FROM INFORMATION_SCHEMA.TABLES
         GO
-        IF OBJECT_ID('$_', 'U') IS NOT NULL
-        DROP TABLE $_
-        GO
+"@  # don't indent the `@` or the preceding sql will fail
+    $table_names = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object{$_.Item(0)} | Where-Object{$_ -notin 'sysdiagrams'}
+
+    $table_names | ForEach-Object {
+        $drop_table = @"
+            USE SERVES
+            GO
+            IF OBJECT_ID('$_', 'U') IS NOT NULL
+            DROP TABLE $_
+            GO
 "@
     Invoke-Sqlcmd -Query $drop_table -ServerInstance $SQL_SERVER
     Write-Host ("Dropped table: {0}" -f $_)
-}
-#>
-$drop_table = @"
-    USE SERVES
-    DROP TABLE network_episode
-    DROP TABLE episode
-    DROP TABLE network_organization
-    DROP TABLE network
-    DROP TABLE organization
-"@
-    Invoke-Sqlcmd -Query $drop_table -ServerInstance $SQL_SERVER
-    Write-Host ("Dropped table: {0}" -f $_)
+    }
+}  
 
-# create all databases
-$sqlcmd = @"        
-    USE SERVES
-    CREATE TABLE episode
-    (
-        [service_episode_id] NVARCHAR(50) NOT NULL,
-        [client_id] NVARCHAR(50) NULL,
-        [outcomegrouped] NVARCHAR(50),
-        [service_type_grouped] NVARCHAR(50),
-        [source] NVARCHAR(50),
-        [started_with] NVARCHAR(50),
-        [ended_with] NVARCHAR(50),
-        [outcome] NVARCHAR(50),
-        [resolution] NVARCHAR(50),
-        [network_scope] NVARCHAR(50)
+function drop_tables {
+    $table_names = @('se_service_subtype','se_service_type','se_network_organization','se_network_episode','se_episode', 'se_network', 'se_organization') 
 
-        CONSTRAINT pk_episodes PRIMARY KEY CLUSTERED (service_episode_id) 
-    );
-    CREATE TABLE network
-    (
-        [network_id] INT NOT NULL,
-        [network_name] VARCHAR(20),
-        [network_region] INT,
-        [network_state] VARCHAR(2),
-        [network_state_enc] INT
-
-        CONSTRAINT pk_network PRIMARY KEY CLUSTERED (network_id)
-    );
-    CREATE TABLE network_episode
-    (
-        [network_episode_id] INT IDENTITY(1,1) NOT NULL,
-        [service_episode_id] NVARCHAR(50) NOT NULL,
-        [network_id] INT NULL,
-        [originalnetwork] INT
-
-        CONSTRAINT pk_network_episode PRIMARY KEY CLUSTERED (network_episode_id),
-        CONSTRAINT pk_service_episode_ID FOREIGN KEY (service_episode_id) REFERENCES episode
-    );
-    CREATE TABLE organization
-    (
-        [organization_name] NVARCHAR(50) NOT NULL,
-        [organization_created_at] INT,
-        [organization_updated_at] INT,
-        [program_id] NVARCHAR(50),
-        [program_name] NVARCHAR(50),
-        [program_created_at] INT,
-        [program_updated_at] INT,
-        [service_type_program_provides] NVARCHAR(50)
-
-        CONSTRAINT pk_current_organization_name PRIMARY KEY CLUSTERED (organization_name)
-    );
-    CREATE TABLE network_organization
-    (
-        [network_organization_id] INT IDENTITY(1,1) NOT NULL,
-        [network_id] INT NULL,
-        [organization_name] NVARCHAR(50),
-        [originating_organization] NVARCHAR(50)
-
-        CONSTRAINT pk_network_organization PRIMARY KEY CLUSTERED (network_organization_id),
-        CONSTRAINT fk_network_id FOREIGN KEY (network_id) REFERENCES network_episode,
-        CONSTRAINT fk_current_organization FOREIGN KEY (organization_name) REFERENCES organization
-    );
-"@
-    Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER
-     
+    $table_names | ForEach-Object {
+        $drop_table = @"
+            USE SERVES
+            GO
+            IF OBJECT_ID('$_', 'U') IS NOT NULL
+            DROP TABLE $_
+            GO
+"@  # don't indent the `@` or the preceding sql will fail
+        Invoke-Sqlcmd -Query $drop_table -ServerInstance $SQL_SERVER
+        Write-Host ("Dropped table: {0}" -f $_)
+    }
 }
 
-Function generate_report {
+
+function create_tables {
+    $create_tables = @"        
+        USE SERVES
+        CREATE TABLE se_episode
+        (
+            [service_episode_id] NVARCHAR(50) NOT NULL,
+            [client_id] NVARCHAR(50) NULL,
+            [outcomegrouped] NVARCHAR(50),
+            [service_type_grouped] NVARCHAR(50),
+            [source] NVARCHAR(50),
+            [started_with] NVARCHAR(50),
+            [ended_with] NVARCHAR(50),
+            [outcome] NVARCHAR(50),
+            [resolution] NVARCHAR(50),
+            [network_scope] NVARCHAR(50)
+
+            CONSTRAINT pk_episodes PRIMARY KEY CLUSTERED (service_episode_id) 
+        );
+        CREATE TABLE se_network
+        (
+            [network_id] INT NOT NULL,
+            [network_name] VARCHAR(20),
+            [network_state] VARCHAR(2),
+            [network_region] INT,
+            [network_state_enc] INT
+
+            CONSTRAINT pk_network PRIMARY KEY CLUSTERED (network_id)
+        );
+        CREATE TABLE se_network_episode
+        (
+            [network_episode_id] INT IDENTITY(1,1) NOT NULL,
+            [service_episode_id] NVARCHAR(50) NOT NULL,
+            [network_id] INT NULL,
+            [originalnetwork] INT
+
+            CONSTRAINT pk_network_episode PRIMARY KEY CLUSTERED (network_episode_id),
+            CONSTRAINT pk_service_episode_ID FOREIGN KEY (service_episode_id) REFERENCES se_episode
+        );
+        CREATE TABLE se_organization
+        (
+            [organization_name] NVARCHAR(50) NOT NULL,
+            [program_id] NVARCHAR(50),
+            [program_name] NVARCHAR(50),
+            [program_created_at] INT,
+            [program_updated_at] INT,
+            [service_type_program_provides] NVARCHAR(50)
+
+            CONSTRAINT pk_current_organization_name PRIMARY KEY CLUSTERED (organization_name)
+        );
+        CREATE TABLE se_network_organization
+        (
+            [network_organization_id] INT IDENTITY(1,1) NOT NULL,
+            [network_id] INT NULL,
+            [organization_name] NVARCHAR(50),
+            [originating_organization] NVARCHAR(50)
+
+            CONSTRAINT pk_network_organization PRIMARY KEY CLUSTERED (network_organization_id),
+            CONSTRAINT fk_network_id FOREIGN KEY (network_id) REFERENCES se_network_episode,
+            CONSTRAINT fk_current_organization FOREIGN KEY (organization_name) REFERENCES se_organization
+        );
+        CREATE TABLE se_service_type
+        (
+            [service_type_id] INT IDENTITY(1,1) NOT NULL,
+            [service_episode_id] NVARCHAR(50),
+            [service_type_name] NVARCHAR(50)
+
+            CONSTRAINT pk_service_type PRIMARY KEY CLUSTERED (service_type_id)
+            CONSTRAINT fk_service_episode_id FOREIGN KEY(service_episode_id) REFERENCES se_episode
+        );
+        CREATE TABLE se_service_subtype
+        (
+            [service_subtype_id] INT IDENTITY(1,1) NOT NULL,
+            [service_type_id] INT,
+            [service_subtype_name] NVARCHAR(50)
+
+            CONSTRAINT pk_service_subtype_id PRIMARY KEY CLUSTERED (service_type_id)
+            CONSTRAINT fk_service_type_id FOREIGN KEY(service_type_id) REFERENCES se_service_type
+        );
+
+"@  # don't indent the `@` or the preceding sql will fail
+
+    Invoke-Sqlcmd -Query $create_tables -ServerInstance $SQL_SERVER 
+      
+    $sqlcmd = @"
+        USE SERVES
+        SELECT table_name [name]
+        FROM INFORMATION_SCHEMA.TABLES
+        GO
+"@  
+    $table_names = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object{$_.Item(0)} | Where-Object{$_ -notin 'sysdiagrams'}
+    Write-Host ('Created the following tables: ' , $table_names)
+                    
+}
+
+
+function generate_report {
     Write-Host 'Generating Report'
     #TODO
 }
- 
 
+function main {
 [int] $prompt = Read-Host -Prompt @"
     Select from one of the items below:
         1. Update Database
-        2. Drop and Re-create tables in Database
-        3. Generate Report 'a'
+        2. Drop Tables
+        3. Create tables
+        4. Generate Report 'a'
         
         >>
 "@
+    if ($prompt -eq 1) {update_database}
+    elseif ($prompt -eq 2) {drop_tables}
+    elseif ($prompt -eq 3) {create_tables}
+    else {generate_report}   
+}
 
-# Main control flow
-if ($prompt -eq 1) {update_database}
-elseif ($prompt -eq 2) {init_db}
-else {generate_report}    
+main
+ 
 
 
 
