@@ -108,13 +108,54 @@ function load_database {
                     Declare @outcome nvarchar(50) = '$($_.Outcome)'
                     Declare @resolution nvarchar(50) = '$($_.Resolution)'
                     Declare @network_scope nvarchar(50) = '$($_.Network_Scope)'
+                    Declare @status varchar(20) = '$($_.Status)'
+
+                    Declare @service_type_id int = NULL
+                    Declare @service_type_name nvarchar(50) = '$($_.Service_Type)'
+
+                    Declare @service_subtype_name nvarchar(50) = '$($_.Service_Subtype)'
                     
-                    INSERT INTO se_episode(service_episode_id, client_id, outcomegrouped, service_type_grouped, [source], started_with, ended_with, outcome, resolution, network_scope) 
-                    VALUES (@service_episode_id, @client_id, @outcomegrouped, @service_type_grouped, @source, @started_with, @ended_with, @outcome, @resolution, @network_scope) 
-                    --SET @SE_ID = scope_identity()
+                    INSERT INTO se_episode(service_episode_id, client_id, outcomegrouped, service_type_grouped, [source], started_with, ended_with, outcome, resolution, network_scope, status) 
+                    VALUES (@service_episode_id, @client_id, @outcomegrouped, @service_type_grouped, @source, @started_with, @ended_with, @outcome, @resolution, @network_scope, @status) 
+                    
+                    INSERT INTO se_service_type(service_episode_id, service_type_name)
+                    VALUES(@service_episode_id, @service_type_name)
+                    SET @service_type_id = scope_identity()
+
+                    INSERT INTO se_service_subtype(service_type_id, service_subtype_name)
+                    VALUES(@service_type_id, @service_subtype_name)
                   
 "@  
                 Invoke-Sqlcmd -Query $episode_insert -ServerInstance $SQL_SERVER
+                $episode_date_metrics = @"
+                    USE SERVES
+
+                    --se_episode_date
+                    Declare @service_episode_id nvarchar(50) = '$($_.Service_Episode_ID)'
+                    Declare @datecreated_y int = '$($_.datecreated_y)'
+                    Declare @datecreated_m int = '$($_.datecreated_m)'
+                    Declare @datecreated_calqtr int = '$($_.datecreated_calqtr)'
+                    Declare @dateclosed_y int = '$($_.dateclosed_y)'
+                    Declare @dateclosed_m int = '$($_.dateclosed_m)'
+                    Declare @dateclosed_calqtr int = '$($_.dateclosed_calqtr)'
+                    Declare @qtrcreated int = '$($_.qtrcreated)'
+                    Declare @qtrclosed int = '$($_.qtrclosed)'
+
+                    --se_episode_metrics
+                    Declare @duration_service_episode real = '$($_.Duration_of_Service_Episode__day)'
+                    Declare @duration_case_created real = '$($_.Time_from_Start_to_Case_Created)'
+                    Declare @duration_case_closed real = '$($_.Duration_of_Case__days_)'  
+                    Declare @duration_program_entry real = '$($_.Time_from_Start_to_Program_Entry)'
+                    Declare @duration_referral_acc real = '$($_.Time_from_CC_Referral_to_Org_Acc)'
+
+                    INSERT INTO se_episode_date(service_episode_id, datecreated_y, datecreated_m, datecreated_calqtr, dateclosed_y, dateclosed_m, dateclosed_calqtr, qtrcreated, qtrclosed)
+                    VALUES(@service_episode_id, @datecreated_y, @datecreated_m, @datecreated_calqtr, @dateclosed_y, @dateclosed_m, @dateclosed_calqtr, @qtrcreated, @qtrclosed)
+
+                    INSERT INTO se_episode_metrics(service_episode_id,duration_service_episode,duration_case_created,duration_case_closed,duration_program_entry,duration_referral_acc)
+                    VALUES(@service_episode_id,@duration_service_episode,@duration_case_created,@duration_case_closed,@duration_program_entry,@duration_referral_acc)
+
+"@
+                Invoke-Sqlcmd -Query $episode_date_metrics -ServerInstance $SQL_SERVER
                 $sqlcmd = @"
                     USE SERVES
 
@@ -138,6 +179,7 @@ function load_database {
                     VALUES(@network_episode_id, @organization_name, @originating_organization)
 "@
                 Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER
+
                 Write-Debug ("{0}: {1}" -f $_.Service_Episode_ID, 'Successful INSERT')
                 $log_string = ('{0} {1} {2}: {3}' -f $_.Service_Episode_ID,$_.cleaned2ob,$_.flag_clientntwk,'Inserted to db')
                 write_log $log_string 0
@@ -168,9 +210,25 @@ function update_database {
 
     process {
         $rows | ForEach-Object {
+            $exist = check_record_exist $_.Service_Episode_ID  # check to see if service_episode_id already exists in db
+            if ($exist -eq 1) {
+                # record has not changed, continue to next record
+                # TODO: Execute stored procedure to check if input network and org is the same/diff as data in db
 
+                # network changed, organization same -> insert new network record
+                # TODO: Execute stored procedure to check if input network and org is the same/diff as data in db
+
+                # network same, organization diff -> insert new organization record
+                # TODO: Execute stored procedure to check if input network and org is the same/diff as data in db
+
+                # network and organization diff -> insert new network and org records
+                # TODO: Execute stored procedure to check if input network and org is the same/diff as data in db
+            }
+
+            else {
+                # TODO: Execute stored procedure to insert record into db
+            }
         }
-
     }
 }
 
@@ -206,7 +264,7 @@ function init_db {
 }  
 
 function drop_tables {
-    $table_names = @('se_service_subtype','se_service_type','se_network_organization','se_network_episode','se_episode') 
+    $table_names = @('se_episode_date','se_episode_metrics','se_service_subtype','se_service_type','se_network_organization','se_organization','se_network_episode','se_episode','se_network') 
 
     $table_names | ForEach-Object {
         $drop_table = @"
@@ -236,9 +294,39 @@ function create_tables {
             [ended_with] NVARCHAR(50),
             [outcome] NVARCHAR(50),
             [resolution] NVARCHAR(50),
-            [network_scope] NVARCHAR(50)
+            [network_scope] NVARCHAR(50),
+            [status] VARCHAR(20)
 
-            CONSTRAINT pk_episodes PRIMARY KEY CLUSTERED (service_episode_id) 
+            CONSTRAINT pk_episode PRIMARY KEY CLUSTERED (service_episode_id) 
+        );
+        CREATE TABLE se_episode_date
+        (
+            --[episode_date_id] INT IDENTITY(1,1) NOT NULL,
+            [service_episode_id] NVARCHAR(50) NOT NULL,
+            [datecreated_y] INT,
+            [datecreated_m] INT,
+            [datecreated_calqtr] INT,
+            [dateclosed_y] INT,
+            [dateclosed_m] INT,
+            [dateclosed_calqtr] INT,
+            [qtrcreated] INT,
+            [qtrclosed] INT,
+
+            CONSTRAINT pk_episode_date PRIMARY KEY CLUSTERED (service_episode_id),
+            CONSTRAINT fk_episode_date FOREIGN KEY (service_episode_id) REFERENCES se_episode
+        );
+        CREATE TABLE se_episode_metrics
+        (
+            --[episode_metrics_id] INT IDENTITY(1,1) NOT NULL,
+            [service_episode_id] NVARCHAR(50) NOT NULL,
+            [duration_service_episode] FLOAT(24),
+            [duration_case_created] FLOAT(24),
+            [duration_case_closed] FLOAT(24),
+            [duration_program_entry] FLOAT(24),
+            [duration_referral_acc] FLOAT(24),
+
+            CONSTRAINT pk_episode_metrics PRIMARY KEY CLUSTERED (service_episode_id),
+            CONSTRAINT fk_episode_metrics FOREIGN KEY (service_episode_id) REFERENCES se_episode
         );
         CREATE TABLE se_network
         (
@@ -258,15 +346,15 @@ function create_tables {
             [originalnetwork] INT,
 
             CONSTRAINT pk_network_episode PRIMARY KEY CLUSTERED (network_episode_id),
-            CONSTRAINT fk_service_episode_id1 FOREIGN KEY (service_episode_id) REFERENCES se_episode,
-            CONSTRAINT fk_network_id1 FOREIGN KEY (network_id) REFERENCES se_network
+            CONSTRAINT fk_network_episode1 FOREIGN KEY (service_episode_id) REFERENCES se_episode,
+            CONSTRAINT fk_network_episode2 FOREIGN KEY (network_id) REFERENCES se_network
         );
         CREATE TABLE se_organization
         (
             [organization_name] NVARCHAR(50) NOT NULL,
             [organization_id] NVARCHAR(50),
 
-            CONSTRAINT pk_organization_name PRIMARY KEY CLUSTERED (organization_name)
+            CONSTRAINT pk_organization PRIMARY KEY CLUSTERED (organization_name)
         );
         CREATE TABLE se_network_organization
         (
@@ -276,8 +364,8 @@ function create_tables {
             [originating_organization] NVARCHAR(50) NULL,
 
             CONSTRAINT pk_network_organization PRIMARY KEY CLUSTERED (network_organization_id),
-            CONSTRAINT fk_network_id FOREIGN KEY (network_episode_id) REFERENCES se_network_episode,
-            CONSTRAINT fk_current_organization FOREIGN KEY (organization_name) REFERENCES se_organization
+            CONSTRAINT fk_network_organization1 FOREIGN KEY (network_episode_id) REFERENCES se_network_episode,
+            CONSTRAINT fk_network_organization2 FOREIGN KEY (organization_name) REFERENCES se_organization
         );
         CREATE TABLE se_service_type
         (
@@ -286,7 +374,7 @@ function create_tables {
             [service_type_name] NVARCHAR(50),
 
             CONSTRAINT pk_service_type PRIMARY KEY CLUSTERED (service_type_id),
-            CONSTRAINT fk_service_episode_id FOREIGN KEY(service_episode_id) REFERENCES se_episode
+            CONSTRAINT fk_service_type FOREIGN KEY(service_episode_id) REFERENCES se_episode
         );
         CREATE TABLE se_service_subtype
         (
@@ -294,8 +382,8 @@ function create_tables {
             [service_type_id] INT,
             [service_subtype_name] NVARCHAR(50),
 
-            CONSTRAINT pk_service_subtype_id PRIMARY KEY CLUSTERED (service_type_id),
-            CONSTRAINT fk_service_type_id FOREIGN KEY(service_type_id) REFERENCES se_service_type
+            CONSTRAINT pk_service_subtype PRIMARY KEY CLUSTERED (service_type_id),
+            CONSTRAINT fk_service_subtype FOREIGN KEY(service_type_id) REFERENCES se_service_type
         );
 
 "@  # don't indent the `@` or the preceding sql will fail
@@ -309,7 +397,9 @@ function create_tables {
         GO
 "@  
     $table_names = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object{$_.Item(0)} | Where-Object{$_ -notin 'sysdiagrams'}
-    Write-Host ('Created the following tables: ' , $table_names)
+    Write-Host 'Created the following tables:'
+    #Write-Host ('Created the following tables: ' , $table_names)
+    $table_names | ForEach-Object {Write-Host $_}
                     
 }
 
