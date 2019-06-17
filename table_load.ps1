@@ -1,4 +1,4 @@
-$FILE_PATH = 'H:\pshell_test_import.csv'
+$FILE_PATH = 'H:\SE_FINAL_20190430_test.csv'
 $SQL_SERVER = 'VETS-RESEARCH04'
 $DebugPreference = 'Continue'  # change to SilentlyContinue to remove debugging messages
 $LOG_FILE_SUCCESS = 'H:\ETL_log_success' + (Get-Date).ToString("yyyy-MM-dd-HHmmss") + '.log'
