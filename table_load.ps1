@@ -1,4 +1,4 @@
-$FILE_PATH = 'H:\SE_FINAL_20190430_test.csv'
+$FILE_PATH = 'H:\pshell_test_import.csv'
 $SQL_SERVER = 'VETS-RESEARCH04'
 $DebugPreference = 'Continue'  # change to SilentlyContinue to remove debugging messages
 $LOG_FILE_SUCCESS = 'H:\ETL_log_success' + (Get-Date).ToString("yyyy-MM-dd-HHmmss") + '.log'
@@ -95,6 +95,7 @@ function load_database {
                 }
             }
             elseif ($exist -eq 0) {  # if record isn't in db, insert it
+                $last_updated_ = Get-Date $_.Last_Updated -Format 'yyyy-MM-dd hh:mm:ss'  # transform source date string to sql datetime2 format
                 $episode_insert = @"
                     use SERVES
                   
@@ -108,7 +109,7 @@ function load_database {
                     Declare @outcome nvarchar(50) = '$($_.Outcome)'
                     Declare @resolution nvarchar(50) = '$($_.Resolution)'
                     Declare @network_scope nvarchar(50) = '$($_.Network_Scope)'
-                    Declare @status varchar(20) = '$($_.Status)'
+                    Declare @status varchar(20) = '$($_.Status)'                  
 
                     Declare @service_type_id int = NULL
                     Declare @service_type_name nvarchar(50) = '$($_.Service_Type)'
@@ -140,6 +141,7 @@ function load_database {
                     Declare @dateclosed_calqtr int = '$($_.dateclosed_calqtr)'
                     Declare @qtrcreated int = '$($_.qtrcreated)'
                     Declare @qtrclosed int = '$($_.qtrclosed)'
+                    Declare @last_updated datetime2 = '$last_updated_'
 
                     --se_episode_metrics
                     Declare @duration_service_episode real = '$($_.Duration_of_Service_Episode__day)'
@@ -148,8 +150,8 @@ function load_database {
                     Declare @duration_program_entry real = '$($_.Time_from_Start_to_Program_Entry)'
                     Declare @duration_referral_acc real = '$($_.Time_from_CC_Referral_to_Org_Acc)'
 
-                    INSERT INTO se_episode_date(service_episode_id, datecreated_y, datecreated_m, datecreated_calqtr, dateclosed_y, dateclosed_m, dateclosed_calqtr, qtrcreated, qtrclosed)
-                    VALUES(@service_episode_id, @datecreated_y, @datecreated_m, @datecreated_calqtr, @dateclosed_y, @dateclosed_m, @dateclosed_calqtr, @qtrcreated, @qtrclosed)
+                    INSERT INTO se_episode_date(service_episode_id, datecreated_y, datecreated_m, datecreated_calqtr, dateclosed_y, dateclosed_m, dateclosed_calqtr, qtrcreated, qtrclosed,last_updated)
+                    VALUES(@service_episode_id, @datecreated_y, @datecreated_m, @datecreated_calqtr, @dateclosed_y, @dateclosed_m, @dateclosed_calqtr, @qtrcreated, @qtrclosed, @last_updated)
 
                     INSERT INTO se_episode_metrics(service_episode_id,duration_service_episode,duration_case_created,duration_case_closed,duration_program_entry,duration_referral_acc)
                     VALUES(@service_episode_id,@duration_service_episode,@duration_case_created,@duration_case_closed,@duration_program_entry,@duration_referral_acc)
@@ -172,8 +174,8 @@ function load_database {
 
                     SET @network_organization_id = @network_episode_id
                     
-                    Declare @organization_name nvarchar(50) = '$($_.Current_Organization)'
-                    Declare @originating_organization nvarchar(50) = '$($_.Originating_Organization)'
+                    Declare @organization_name nvarchar(100) = '$($_.Current_Organization)'
+                    Declare @originating_organization nvarchar(100) = '$($_.Originating_Organization)'
 
                     INSERT INTO se_network_organization(network_episode_id, organization_name, originating_organization)
                     VALUES(@network_episode_id, @organization_name, @originating_organization)
@@ -203,8 +205,7 @@ function update_database {
 
     begin {  # import source csv into csv object and create array of all (including duplicate) records from Episodes table 
         $rows = Import-Csv -Path $FILE_PATH
-        $sql_object = Invoke-Sqlcmd -ServerInstance $SQL_SERVER -Query "USE SERVES; SELECT service_episode_id FROM se_episode" 
-        $service_episode_ids = @($sql_object | ForEach-Object {$_.Service_Episode_ID})
+
         
     }
 
@@ -214,7 +215,23 @@ function update_database {
             if ($exist -eq 1) {
                 # record has not changed, continue to next record
                 # TODO: Execute stored procedure to check if input network and org is the same/diff as data in db
+                $_sqlcmd = @"
+                    USE SERVES
+                    DECLARE @sp_result INT               
+                    EXEC check_exists '$($_.Service_Episode_ID)', @do_exists = @sp_result OUTPUT
+                    select @sp_result
+                    GO
+                   
+"@
+                $sqlcmd = @"
+                    USE SERVES
 
+
+
+"@
+                $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER  -OutputSqlErrors $true | ForEach-Object {$_.Item(0)}
+                write-host ('{0}: {1}' -f $_.Service_Episode_ID, $result)
+                
                 # network changed, organization same -> insert new network record
                 # TODO: Execute stored procedure to check if input network and org is the same/diff as data in db
 
@@ -311,6 +328,7 @@ function create_tables {
             [dateclosed_calqtr] INT,
             [qtrcreated] INT,
             [qtrclosed] INT,
+            [last_updated] DATETIME2
 
             CONSTRAINT pk_episode_date PRIMARY KEY CLUSTERED (service_episode_id),
             CONSTRAINT fk_episode_date FOREIGN KEY (service_episode_id) REFERENCES se_episode
@@ -351,7 +369,7 @@ function create_tables {
         );
         CREATE TABLE se_organization
         (
-            [organization_name] NVARCHAR(50) NOT NULL,
+            [organization_name] NVARCHAR(100) NOT NULL,
             [organization_id] NVARCHAR(50),
 
             CONSTRAINT pk_organization PRIMARY KEY CLUSTERED (organization_name)
@@ -360,8 +378,8 @@ function create_tables {
         (
             [network_organization_id] INT IDENTITY(1,1) NOT NULL,
             [network_episode_id] INT NOT NULL,
-            [organization_name] NVARCHAR(50) NULL,
-            [originating_organization] NVARCHAR(50) NULL,
+            [organization_name] NVARCHAR(100) NULL,
+            [originating_organization] NVARCHAR(100) NULL,
 
             CONSTRAINT pk_network_organization PRIMARY KEY CLUSTERED (network_organization_id),
             CONSTRAINT fk_network_organization1 FOREIGN KEY (network_episode_id) REFERENCES se_network_episode,
