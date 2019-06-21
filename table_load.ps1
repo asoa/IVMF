@@ -1,3 +1,4 @@
+#$FILE_PATH = 'H:\SE_FINAL_20190430_test.csv'
 $FILE_PATH = 'H:\pshell_test_import.csv'
 $SQL_SERVER = 'VETS-RESEARCH04'
 $DebugPreference = 'Continue'  # change to SilentlyContinue to remove debugging messages
@@ -50,49 +51,51 @@ function load_database {
     )
 
     Begin {  # import source csv into csv object and create array of all (including duplicate) records from Episodes table 
-        $rows = Import-Csv -Path $FILE_PATH
-        $sql_object = Invoke-Sqlcmd -ServerInstance $SQL_SERVER -Query "USE SERVES; SELECT service_episode_id FROM se_episode" 
-        $service_episode_ids = @($sql_object | ForEach-Object {$_.Service_Episode_ID})
-        
+        $rows = Import-Csv -Path $FILE_PATH 
     }
 
     Process {
-        $rows | ForEach-Object  {  # iterate over earch record in csv object
+        $rows | ForEach-Object  {  # iterate over each record in csv object
             
             $exist = check_record_exist $_.Service_Episode_ID  # check to see if service_episode_id already exists in db
             if ($exist -eq 1) {
-                # record has not changed, continue to next record
-                if (($_.originalnetwork -eq $_.currentnetwork) -and ($_.Current_Organization -eq $_.Originating_Organization)) {
-                    # Execute stored procedure to check if input network and org is the same/diff as data in db
-                    $str = 'already in database and network nor organization has changed'
-                    Write-Debug ("{0}: {1}" -f $_.Service_Episode_ID,'already in database and neither network nor organization changed')
-                    $log_string = ('{0} {1} {2}: {3}' -f $_.Service_Episode_ID,$_.cleaned2ob,$_.flag_clientntwk,'Neither network nor org changed')
-                    write_log $log_string 1
+                # Execute stored procedure to check if input network and org is the same/diff as data in db
+
+                $sqlcmd = @"
+                    USE SERVES
+                    Declare @sp_result INT
+                    EXEC check_net_org_same '$($_.Service_Episode_ID)', '$($_.currentnetwork)', '$($_.Current_Organization)', @result = @sp_result OUTPUT
+                    select @sp_result
+    "@
+                $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object {$_.Item(0)}
+                Write-Host $result
+
+                if($result -eq 0) {  # record has not changed, continue to next record
+                    return
+
+                } elseif($result -eq 1) {  # net changed, org same
+                    $sqlcmd = @"
+                        USE SERVES
+                        Declare @sp_result INT
+                        EXEC update_network '$($_.Service_Episode_ID)', '$($_.currentnetwork)', '$($_.originalnetwork)', '$($_.Current_Organization)', '$($_.Originating_Organization)', @result = @sp_result OUTPUT
+                        SELECT @sp_result
+    "@
+                $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object {$_.Item(0)}
+                Write-Host ('Attempted to updated network_episode table with return code: {0}' -f $result)
+                } elseif($result -eq 2) {  # net same, org changed
+                        $sqlcmd = @"
+                        USE SERVES
+                        Declare @sp_result INT
+                        EXEC update_org '$($_.Service_Episode_ID)', '$($_.currentnetwork)', '$($_.originalnetwork)', '$($_.Current_Organization)', '$($_.Originating_Organization)', @result = @sp_result OUTPUT
+                        SELECT @sp_result
+    "@
+                $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object {$_.Item(0)}
+
+                } else {  # both net and org changed
+                    write-host 'net and org write'
+
                 }
-                # network changed, organization same -> insert new network record
-                elseif (($_.originalnetwork -ne $_.currentnetwork) -and ($_.Current_Organization -eq $_.Originating_Organization)) {
-                    # Execute stored procedure to check if input network and org is the same/diff as data in db
-                    $str = 'network changed, inserting new network record'
-                    Write-Debug ("{0}: {1}" -f $_.Service_Episode_ID,$str)
-                    $log_string = ('{0} {1} {2}: {3}' -f $_.Service_Episode_ID,$_.cleaned2ob,$_.flag_clientntwk,'Updated network')
-                    write_log $log_string 0
-                }
-                # network same, organization diff -> insert new organization record
-                elseif (($_.originalnetwork -eq $_.currentnetwork) -and ($_.Current_Organization -ne $_.Originating_Organization)) {
-                    # Execute stored procedure to check if input network and org is the same/diff as data in db
-                    $str = 'organization changed, inserting new organization record'
-                    Write-Debug ("{0}: {1}" -f $_.Service_Episode_ID,$str)
-                    $log_string = ('{0} {1} {2}: {3}' -f $_.Service_Episode_ID,$_.cleaned2ob,$_.flag_clientntwk,'Updated org')
-                    write_log $log_string 0
-                }
-                # network and organization diff -> insert new network and org records
-                elseif (($_.originalnetwork -ne $_.currentnetwork) -and ($_.Current_Organization -ne $_.Originating_Organization)) {
-                    # Execute stored procedure to check if input network and org is the same/diff as data in db
-                    $str = 'network and organization changed, inserting new network and organization record'
-                    Write-Debug ("{0}: {1}" -f $_.Service_Episode_ID,$str)
-                    $log_string = ('{0} {1} {2}: {3}' -f $_.Service_Episode_ID,$_.cleaned2ob,$_.flag_clientntwk,'Updated network and org')
-                    write_log $log_string 0
-                }
+
             }
             elseif ($exist -eq 0) {  # if record isn't in db, insert it
                 $last_updated_ = Get-Date $_.Last_Updated -Format 'yyyy-MM-dd hh:mm:ss'  # transform source date string to sql datetime2 format
@@ -109,8 +112,13 @@ function load_database {
                     Declare @outcome nvarchar(50) = '$($_.Outcome)'
                     Declare @resolution nvarchar(50) = '$($_.Resolution)'
                     Declare @network_scope nvarchar(50) = '$($_.Network_Scope)'
-                    Declare @status varchar(20) = '$($_.Status)'                  
+                    Declare @status varchar(20) = '$($_.Status)'
 
+                    Declare @age int = '$($_.Age)'
+                    Declare @mil_affiliation varchar(25) = '$($_.Military_Affiliation)'
+                    Declare @branch varchar(25) = '$($_.Branch)'
+                    Declare @gender varchar(10) = '$($_.Gender)'
+                                      
                     Declare @service_type_id int = NULL
                     Declare @service_type_name nvarchar(50) = '$($_.Service_Type)'
 
@@ -125,7 +133,9 @@ function load_database {
 
                     INSERT INTO se_service_subtype(service_type_id, service_subtype_name)
                     VALUES(@service_type_id, @service_subtype_name)
-                  
+
+                    INSERT INTO se_demographic(service_episode_id, age, mil_affiliation, branch, gender)
+                    VALUES(@service_episode_id, @age, @mil_affiliation, @branch, @gender)
 "@  
                 Invoke-Sqlcmd -Query $episode_insert -ServerInstance $SQL_SERVER
                 $episode_date_metrics = @"
@@ -158,6 +168,9 @@ function load_database {
 
 "@
                 Invoke-Sqlcmd -Query $episode_date_metrics -ServerInstance $SQL_SERVER
+
+                $current_organization_ = $_.Current_Organization.Replace("'",'"')
+                $originating_organization = $_.Originating_Organization.Replace("'",'"')
                 $sqlcmd = @"
                     USE SERVES
 
@@ -166,16 +179,17 @@ function load_database {
                     Declare @network_id int = '$($_.currentnetwork)'
                     --Declare @currentnetwork int = '$($_.currentnetwork)'
                     Declare @originalnetwork int = '$($_.originalnetwork)'    
-                    Declare @network_organization_id int = NULL         
+                    Declare @network_organization_id int = NULL 
+                    Declare @last_updated datetime2 = '$last_updated_'        
 
-                    INSERT INTO se_network_episode(service_episode_id, network_id, originalnetwork) 
-                    VALUES(@service_episode_id, @network_id, @originalnetwork)
+                    INSERT INTO se_network_episode(service_episode_id, network_id, originalnetwork, last_updated) 
+                    VALUES(@service_episode_id, @network_id, @originalnetwork, @last_updated)
                     SET @network_episode_id = scope_identity()
 
                     SET @network_organization_id = @network_episode_id
                     
-                    Declare @organization_name nvarchar(100) = '$($_.Current_Organization)'
-                    Declare @originating_organization nvarchar(100) = '$($_.Originating_Organization)'
+                    Declare @organization_name nvarchar(100) = '$($current_organization_)'
+                    Declare @originating_organization nvarchar(100) = '$($originating_organization)'
 
                     INSERT INTO se_network_organization(network_episode_id, organization_name, originating_organization)
                     VALUES(@network_episode_id, @organization_name, @originating_organization)
@@ -197,57 +211,6 @@ function load_database {
     }
     
 } # end load_database
-
-function update_database {
-    param (
-        # [Parameter(ValueFromPipeline=$true)] [psobject]$obj
-    )
-
-    begin {  # import source csv into csv object and create array of all (including duplicate) records from Episodes table 
-        $rows = Import-Csv -Path $FILE_PATH
-
-        
-    }
-
-    process {
-        $rows | ForEach-Object {
-            $exist = check_record_exist $_.Service_Episode_ID  # check to see if service_episode_id already exists in db
-            if ($exist -eq 1) {
-                # record has not changed, continue to next record
-                # TODO: Execute stored procedure to check if input network and org is the same/diff as data in db
-                $_sqlcmd = @"
-                    USE SERVES
-                    DECLARE @sp_result INT               
-                    EXEC check_exists '$($_.Service_Episode_ID)', @do_exists = @sp_result OUTPUT
-                    select @sp_result
-                    GO
-                   
-"@
-                $sqlcmd = @"
-                    USE SERVES
-
-
-
-"@
-                $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER  -OutputSqlErrors $true | ForEach-Object {$_.Item(0)}
-                write-host ('{0}: {1}' -f $_.Service_Episode_ID, $result)
-                
-                # network changed, organization same -> insert new network record
-                # TODO: Execute stored procedure to check if input network and org is the same/diff as data in db
-
-                # network same, organization diff -> insert new organization record
-                # TODO: Execute stored procedure to check if input network and org is the same/diff as data in db
-
-                # network and organization diff -> insert new network and org records
-                # TODO: Execute stored procedure to check if input network and org is the same/diff as data in db
-            }
-
-            else {
-                # TODO: Execute stored procedure to insert record into db
-            }
-        }
-    }
-}
 
 
 function init_db {
@@ -281,7 +244,7 @@ function init_db {
 }  
 
 function drop_tables {
-    $table_names = @('se_episode_date','se_episode_metrics','se_service_subtype','se_service_type','se_network_organization','se_organization','se_network_episode','se_episode','se_network') 
+    $table_names = @('se_episode_date','se_episode_metrics','se_service_subtype','se_service_type','se_network_organization','se_organization','se_network_episode','se_demographic','se_episode','se_network') 
 
     $table_names | ForEach-Object {
         $drop_table = @"
@@ -362,6 +325,7 @@ function create_tables {
             [service_episode_id] NVARCHAR(50) NOT NULL,
             [network_id] INT NOT NULL,
             [originalnetwork] INT,
+            [last_updated] DATETIME2
 
             CONSTRAINT pk_network_episode PRIMARY KEY CLUSTERED (network_episode_id),
             CONSTRAINT fk_network_episode1 FOREIGN KEY (service_episode_id) REFERENCES se_episode,
@@ -400,8 +364,20 @@ function create_tables {
             [service_type_id] INT,
             [service_subtype_name] NVARCHAR(50),
 
-            CONSTRAINT pk_service_subtype PRIMARY KEY CLUSTERED (service_type_id),
+            CONSTRAINT pk_service_subtype PRIMARY KEY CLUSTERED (service_subtype_id),
             CONSTRAINT fk_service_subtype FOREIGN KEY(service_type_id) REFERENCES se_service_type
+        );
+        CREATE TABLE se_demographic
+        (
+            --[demographic_id] INT IDENTITY(1,1) NOT NULL,
+            [service_episode_id] NVARCHAR(50) UNIQUE NOT NULL,
+            [age] INT NULL,
+            [mil_affiliation] VARCHAR(25) NULL,
+            [branch] VARCHAR(25) NULL,
+            [gender] VARCHAR(10) NULL,
+
+            --CONSTRAINT pk_demographic PRIMARY KEY CLUSTERED (demographic_id),
+            CONSTRAINT fk_demographic FOREIGN KEY(service_episode_id) REFERENCES se_episode
         );
 
 "@  # don't indent the `@` or the preceding sql will fail
@@ -430,18 +406,16 @@ function generate_report {
 function main {
 [int] $prompt = Read-Host -Prompt @"
     Select from one of the items below:
-        1. Load Database
-        2. Update Database
-        3. Drop Tables
-        4. Create tables
-        5. Generate Report 'a'
+        1. Update Database
+        2. Drop Tables
+        3. Create tables
+        4. Generate Report 'a'
         
         >>
 "@
-    if ($prompt -eq 1) {load_database}
-    elseif ($prompt -eq 2) {update_database}
-    elseif ($prompt -eq 3) {drop_tables}
-    elseif ($prompt -eq 4) {create_tables}
+    if ($prompt -eq 1) {update_database}
+    elseif ($prompt -eq 2) {drop_tables}
+    elseif ($prompt -eq 3) {create_tables}
     else {generate_report}   
 }
 
