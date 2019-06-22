@@ -11,7 +11,7 @@ Function check_record_exist {
     # sends query to db to check if $id exists
     Param ([string] $id)
     $sqlcmd = @"
-        USE SERVES
+        USE SERVES_TEST
         IF EXISTS (SELECT service_episode_id FROM se_episode WHERE service_episode_id = '$id')
         select 1
         ELSE 
@@ -36,7 +36,7 @@ function write_log {
    else {Add-content $LOG_FILE_FAILURE -value $logstring}
 }
 
-function load_database {
+function update_database {
     <#
         Checks first to see if episodeid exists, orig/current network diff, orig/current org diff
         case 1: if episodeid does not exist, insert the episode, network, and org record
@@ -56,51 +56,59 @@ function load_database {
 
     Process {
         $rows | ForEach-Object  {  # iterate over each record in csv object
-            
+            $last_updated_ = Get-Date $_.Last_Updated -Format 'yyyy-MM-dd hh:mm:ss'  # transform source date string to sql datetime2 format
             $exist = check_record_exist $_.Service_Episode_ID  # check to see if service_episode_id already exists in db
-            if ($exist -eq 1) {
-                # Execute stored procedure to check if input network and org is the same/diff as data in db
-
+            Write-Host ('{0}: {1}' -f $_.Service_Episode_ID, $exist)
+            if ($exist -eq 1) {  # service_episoded_id is already in db, updated the network/org or both
                 $sqlcmd = @"
-                    USE SERVES
+                    USE SERVES_TEST
                     Declare @sp_result INT
                     EXEC check_net_org_same '$($_.Service_Episode_ID)', '$($_.currentnetwork)', '$($_.Current_Organization)', @result = @sp_result OUTPUT
                     select @sp_result
-    "@
+"@
                 $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object {$_.Item(0)}
-                Write-Host $result
-
+                # Execute stored procedure to check if input network and org is the same/diff as data in db
+                Write-Host ('{0}: Result:{1}' -f $_.Service_Episode_ID, $result)
                 if($result -eq 0) {  # record has not changed, continue to next record
+
+                    Write-Host ('Net nor Org has changed, continuing to next record')
                     return
 
                 } elseif($result -eq 1) {  # net changed, org same
                     $sqlcmd = @"
-                        USE SERVES
+                        USE SERVES_TEST
                         Declare @sp_result INT
-                        EXEC update_network '$($_.Service_Episode_ID)', '$($_.currentnetwork)', '$($_.originalnetwork)', '$($_.Current_Organization)', '$($_.Originating_Organization)', @result = @sp_result OUTPUT
+                        EXEC update_network '$($_.Service_Episode_ID)', '$($_.currentnetwork)', '$($_.originalnetwork)', '$($_.Current_Organization)', '$($_.Originating_Organization)', '$last_updated_', @result = @sp_result OUTPUT
                         SELECT @sp_result
-    "@
-                $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object {$_.Item(0)}
-                Write-Host ('Attempted to updated network_episode table with return code: {0}' -f $result)
+"@
+                    $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object {$_.Item(0)}
+                    Write-Debug ('Attempted to updated network_episode table with return code: {0}' -f $result)
                 } elseif($result -eq 2) {  # net same, org changed
-                        $sqlcmd = @"
-                        USE SERVES
+                    $sqlcmd = @"
+                        USE SERVES_TEST
                         Declare @sp_result INT
-                        EXEC update_org '$($_.Service_Episode_ID)', '$($_.currentnetwork)', '$($_.originalnetwork)', '$($_.Current_Organization)', '$($_.Originating_Organization)', @result = @sp_result OUTPUT
+                        EXEC update_org '$($_.Service_Episode_ID)', '$($_.Current_Organization)', '$($_.Originating_Organization)', '$last_updated_', @result = @sp_result OUTPUT
                         SELECT @sp_result
-    "@
-                $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object {$_.Item(0)}
+"@
+                    $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object {$_.Item(0)}
+                    Write-Debug ('Attempted to updated network_organization table with return code: {0}' -f $result)
 
                 } else {  # both net and org changed
-                    write-host 'net and org write'
-
+                    $sqlcmd = @"
+                        USE SERVES_TEST
+                        Declare @sp_result INT
+                        EXEC update_network_org '$($_.Service_Episode_ID)', '$($_.currentnetwork)', '$($_.originalnetwork)', '$($_.Current_Organization)', '$($_.Originating_Organization)', '$last_updated_', @result = @sp_result OUTPUT
+                        SELECT @sp_result
+"@
+                    $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object {$_.Item(0)}
+                    write-Debug ('Attempted to update network_episode and network_organization tables with return code: {0}' -f $result)
                 }
 
             }
             elseif ($exist -eq 0) {  # if record isn't in db, insert it
                 $last_updated_ = Get-Date $_.Last_Updated -Format 'yyyy-MM-dd hh:mm:ss'  # transform source date string to sql datetime2 format
                 $episode_insert = @"
-                    use SERVES
+                    USE SERVES_TEST
                   
                     Declare @service_episode_id nvarchar(50) = '$($_.Service_Episode_ID)'
                     Declare @client_id nvarchar(50) = '$($_.Client_ID)'
@@ -139,7 +147,7 @@ function load_database {
 "@  
                 Invoke-Sqlcmd -Query $episode_insert -ServerInstance $SQL_SERVER
                 $episode_date_metrics = @"
-                    USE SERVES
+                    USE SERVES_TEST
 
                     --se_episode_date
                     Declare @service_episode_id nvarchar(50) = '$($_.Service_Episode_ID)'
@@ -172,7 +180,7 @@ function load_database {
                 $current_organization_ = $_.Current_Organization.Replace("'",'"')
                 $originating_organization = $_.Originating_Organization.Replace("'",'"')
                 $sqlcmd = @"
-                    USE SERVES
+                    USE SERVES_TEST
 
                     Declare @network_episode_id int = NULL
                     Declare @service_episode_id nvarchar(50) = '$($_.Service_Episode_ID)'
@@ -191,8 +199,8 @@ function load_database {
                     Declare @organization_name nvarchar(100) = '$($current_organization_)'
                     Declare @originating_organization nvarchar(100) = '$($originating_organization)'
 
-                    INSERT INTO se_network_organization(network_episode_id, organization_name, originating_organization)
-                    VALUES(@network_episode_id, @organization_name, @originating_organization)
+                    INSERT INTO se_network_organization(network_episode_id, organization_name, originating_organization, last_updated)
+                    VALUES(@network_episode_id, @organization_name, @originating_organization, @last_updated)
 "@
                 Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER
 
@@ -202,7 +210,7 @@ function load_database {
             }
            
             else {
-                Write_Debug ('{0}: {1}' -f $_.Service_Episode_ID, "Not inserted to db")
+                Write-Debug ('{0}: {1}' -f $_.Service_Episode_ID, "Not inserted to db")
                 $log_string = ('{0} {1} {2}: {3}' -f $_.Service_Episode_ID,$_.cleaned2ob,$_.flag_clientntwk,'Not inserted to db')
                 write_log $log_string 1
             }
@@ -223,7 +231,7 @@ function init_db {
 
     # get tablenames from db
     $sqlcmd = @"
-        USE SERVES
+        USE SERVES_TEST
         SELECT table_name [name]
         FROM INFORMATION_SCHEMA.TABLES
         GO
@@ -232,7 +240,7 @@ function init_db {
 
     $table_names | ForEach-Object {
         $drop_table = @"
-            USE SERVES
+            USE SERVES_TEST
             GO
             IF OBJECT_ID('$_', 'U') IS NOT NULL
             DROP TABLE $_
@@ -248,7 +256,7 @@ function drop_tables {
 
     $table_names | ForEach-Object {
         $drop_table = @"
-            USE SERVES
+            USE SERVES_TEST
             GO
             IF OBJECT_ID('$_', 'U') IS NOT NULL
             DROP TABLE $_
@@ -262,7 +270,7 @@ function drop_tables {
 
 function create_tables {
     $create_tables = @"        
-        USE SERVES
+        USE SERVES_TEST
         CREATE TABLE se_episode
         (
             [service_episode_id] NVARCHAR(50) NOT NULL,
@@ -344,6 +352,7 @@ function create_tables {
             [network_episode_id] INT NOT NULL,
             [organization_name] NVARCHAR(100) NULL,
             [originating_organization] NVARCHAR(100) NULL,
+            [last_updated] DATETIME2
 
             CONSTRAINT pk_network_organization PRIMARY KEY CLUSTERED (network_organization_id),
             CONSTRAINT fk_network_organization1 FOREIGN KEY (network_episode_id) REFERENCES se_network_episode,
@@ -385,7 +394,7 @@ function create_tables {
     Invoke-Sqlcmd -Query $create_tables -ServerInstance $SQL_SERVER 
       
     $sqlcmd = @"
-        USE SERVES
+        USE SERVES_TEST
         SELECT table_name [name]
         FROM INFORMATION_SCHEMA.TABLES
         GO
