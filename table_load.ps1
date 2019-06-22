@@ -17,7 +17,8 @@ Function check_record_exist {
         ELSE 
         select 0
 "@  # don't indent the `@` or the preceding sql will fail
-    $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object {$_.Item(0)}
+    $sql_error = $null
+    $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object {$_.Item(0)} 
     return $result
 }
 
@@ -26,14 +27,16 @@ function write_log {
        [Parameter(Mandatory=$true, Position=0)] 
        [string]$logstring, 
        [Parameter(Mandatory=$true, Position=1)] 
-       [int]$num 
+       [int]$num,
+       [Parameter(Mandatory=$true, Position=2)] 
+       [int]$row_num 
    )
 
    # $stamp = (Get-Date).ToString("yyyy/MM/dd HH:mm:ss")
-   # $log_entry = $logstring + " " + $stamp
+   $log_entry =  "line {0}: " -f $row_num + $logstring
 
-   if($num -eq 0) {Add-content $LOG_FILE_SUCCESS -value $logstring} 
-   else {Add-content $LOG_FILE_FAILURE -value $logstring}
+   if($num -eq 0) {Add-content $LOG_FILE_SUCCESS -value $log_entry} 
+   else {Add-content $LOG_FILE_FAILURE -value $log_entry}
 }
 
 function update_database {
@@ -55,10 +58,14 @@ function update_database {
     }
 
     Process {
+        $row_number = 1
         $rows | ForEach-Object  {  # iterate over each record in csv object
+            $row_number++
             $last_updated_ = Get-Date $_.Last_Updated -Format 'yyyy-MM-dd hh:mm:ss'  # transform source date string to sql datetime2 format
             $exist = check_record_exist $_.Service_Episode_ID  # check to see if service_episode_id already exists in db
-            Write-Host ('{0}: {1}' -f $_.Service_Episode_ID, $exist)
+            $sql_error = $null
+            # Write-Host ('{0}: {1}' -f $_.Service_Episode_ID, $exist)
+            # TODO add condition check new last_updated > old last_updated
             if ($exist -eq 1) {  # service_episoded_id is already in db, updated the network/org or both
                 $sqlcmd = @"
                     USE SERVES_TEST
@@ -66,12 +73,14 @@ function update_database {
                     EXEC check_net_org_same '$($_.Service_Episode_ID)', '$($_.currentnetwork)', '$($_.Current_Organization)', @result = @sp_result OUTPUT
                     select @sp_result
 "@
-                $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object {$_.Item(0)}
+                $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER -ErrorVariable sql_error -ErrorAction SilentlyContinue| ForEach-Object {$_.Item(0)} 
+                if($sql_error) {write_log $sql_error 1 $row_number}
                 # Execute stored procedure to check if input network and org is the same/diff as data in db
-                Write-Host ('{0}: Result:{1}' -f $_.Service_Episode_ID, $result)
+                # Write-Host ('{0}: Result:{1}' -f $_.Service_Episode_ID, $result)
                 if($result -eq 0) {  # record has not changed, continue to next record
 
-                    Write-Host ('Net nor Org has changed, continuing to next record')
+                    write_log ('Network and Organization are the same, continuing to next record') 0 $row_number
+                    Write-Debug ('Network and Organization are the same, continuing to next record')
                     return
 
                 } elseif($result -eq 1) {  # net changed, org same
@@ -81,7 +90,9 @@ function update_database {
                         EXEC update_network '$($_.Service_Episode_ID)', '$($_.currentnetwork)', '$($_.originalnetwork)', '$($_.Current_Organization)', '$($_.Originating_Organization)', '$last_updated_', @result = @sp_result OUTPUT
                         SELECT @sp_result
 "@
-                    $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object {$_.Item(0)}
+                    $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER -ErrorVariable sql_error -ErrorAction SilentlyContinue | ForEach-Object {$_.Item(0)} 
+                    if($sql_error) {write_log $sql_error 1 $row_number}
+                    else {write_log ('Attempted to updated network_episode table with return code: {0}' -f $result) 0 $row_number}
                     Write-Debug ('Attempted to updated network_episode table with return code: {0}' -f $result)
                 } elseif($result -eq 2) {  # net same, org changed
                     $sqlcmd = @"
@@ -90,8 +101,10 @@ function update_database {
                         EXEC update_org '$($_.Service_Episode_ID)', '$($_.Current_Organization)', '$($_.Originating_Organization)', '$last_updated_', @result = @sp_result OUTPUT
                         SELECT @sp_result
 "@
-                    $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object {$_.Item(0)}
-                    Write-Debug ('Attempted to updated network_organization table with return code: {0}' -f $result)
+                    $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER -ErrorVariable sql_error -ErrorAction SilentlyContinue| ForEach-Object {$_.Item(0)} 
+                    if($sql_error) {write_log $sql_error 1}
+                    else {write_log ('Attempted to update network_organization table with return code: {0}' -f $result) 0 $row_number}
+                    Write-Debug ('Attempted to update network_organization table with return code: {0}' -f $result)
 
                 } else {  # both net and org changed
                     $sqlcmd = @"
@@ -100,7 +113,9 @@ function update_database {
                         EXEC update_network_org '$($_.Service_Episode_ID)', '$($_.currentnetwork)', '$($_.originalnetwork)', '$($_.Current_Organization)', '$($_.Originating_Organization)', '$last_updated_', @result = @sp_result OUTPUT
                         SELECT @sp_result
 "@
-                    $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER | ForEach-Object {$_.Item(0)}
+                    $result = Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER -ErrorVariable sql_error -ErrorAction SilentlyContinue| ForEach-Object {$_.Item(0)} 
+                    if($sql_error) {write_log $sql_error 1 $row_number}
+                    else {write_log ('Attempted to update network_episode and network_organization table with return code: {0}' -f $result) 0 $row_number}
                     write-Debug ('Attempted to update network_episode and network_organization tables with return code: {0}' -f $result)
                 }
 
@@ -145,7 +160,11 @@ function update_database {
                     INSERT INTO se_demographic(service_episode_id, age, mil_affiliation, branch, gender)
                     VALUES(@service_episode_id, @age, @mil_affiliation, @branch, @gender)
 "@  
-                Invoke-Sqlcmd -Query $episode_insert -ServerInstance $SQL_SERVER
+                $sql_error = $null
+                Invoke-Sqlcmd -Query $episode_insert -ServerInstance $SQL_SERVER -ErrorVariable sql_error -ErrorAction SilentlyContinue
+                if($sql_error) {write_log $sql_error 1 $row_number}
+                else {write_log ('{0}: Inserted to db' -f $_.Service_Episode_ID) 0 $row_number}
+
                 $episode_date_metrics = @"
                     USE SERVES_TEST
 
@@ -175,7 +194,8 @@ function update_database {
                     VALUES(@service_episode_id,@duration_service_episode,@duration_case_created,@duration_case_closed,@duration_program_entry,@duration_referral_acc)
 
 "@
-                Invoke-Sqlcmd -Query $episode_date_metrics -ServerInstance $SQL_SERVER
+                Invoke-Sqlcmd -Query $episode_date_metrics -ServerInstance $SQL_SERVER -ErrorVariable sql_error -ErrorAction SilentlyContinue
+                if($sql_error) {write_log $sql_error 1 $row_number}
 
                 $current_organization_ = $_.Current_Organization.Replace("'",'"')
                 $originating_organization = $_.Originating_Organization.Replace("'",'"')
@@ -202,23 +222,24 @@ function update_database {
                     INSERT INTO se_network_organization(network_episode_id, organization_name, originating_organization, last_updated)
                     VALUES(@network_episode_id, @organization_name, @originating_organization, @last_updated)
 "@
-                Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER
+                Invoke-Sqlcmd -Query $sqlcmd -ServerInstance $SQL_SERVER -ErrorVariable sql_error -ErrorAction SilentlyContinue
+                if($sql_error) {write_log $sql_error 1 $row_number}
 
-                Write-Debug ("{0}: {1}" -f $_.Service_Episode_ID, 'Successful INSERT')
-                $log_string = ('{0} {1} {2}: {3}' -f $_.Service_Episode_ID,$_.cleaned2ob,$_.flag_clientntwk,'Inserted to db')
-                write_log $log_string 0
+                # Write-Debug ("{0}: {1}" -f $_.Service_Episode_ID, 'Successful INSERT')
+                # $log_string = ('{0} {1} {2}: {3}' -f $_.Service_Episode_ID,$_.cleaned2ob,$_.flag_clientntwk,'Inserted to db')
+                # write_log $log_string 0 $row_number
             }
            
             else {
                 Write-Debug ('{0}: {1}' -f $_.Service_Episode_ID, "Not inserted to db")
                 $log_string = ('{0} {1} {2}: {3}' -f $_.Service_Episode_ID,$_.cleaned2ob,$_.flag_clientntwk,'Not inserted to db')
-                write_log $log_string 1
+                write_log $log_string 1 $row_number
             }
         }
     
     }
     
-} # end load_database
+} # end update_database
 
 
 function init_db {
