@@ -1,6 +1,6 @@
 $PATH = 'C:\Users\vagrant\Documents'
 #$FILE_PATH = '{0}\se_final_20190430_copy_test.csv' -f $PATH
-$FILE_PATH = '{0}\se_final_20190430_copy' -f $CWD
+$FILE_PATH = '{0}\se_final_20190430_copy.csv' -f $PATH
 $SQL_SERVER = 'localhost'
 $DebugPreference = 'Continue'  # change to SilentlyContinue to remove debugging messages
 $LOG_FILE_SUCCESS = '{0}\ETL_log_success_{1}.log' -f $PATH, (Get-Date).ToString("yyyy-MM-dd-HHmmss")
@@ -149,6 +149,7 @@ function update_database {
                     Declare @current_status varchar(5) = '$($_.Current_Status)'
                     Declare @service_era varchar(50) = '$($_.Service_Era)'
                     Declare @transition_status varchar(50) = '$($_.Transitioning)'
+                    Declare @address_county varchar(50) = '$($_.Address_1_County)'
                     
                     --service/subtype              
                     Declare @service_type_id int = NULL
@@ -165,8 +166,8 @@ function update_database {
                     INSERT INTO se_service_subtype(service_type_id, service_subtype_name)
                     VALUES(@service_type_id, @service_subtype_name)
 
-                    INSERT INTO se_demographic(service_episode_id, gender, age, mil_affiliation, current_status, branch, service_era, transition_status)
-                    VALUES(@service_episode_id, @gender, @age, @mil_affiliation, @current_status, @branch, @service_era, @transition_status)
+                    INSERT INTO se_demographic(service_episode_id, gender, age, mil_affiliation, current_status, branch, service_era, transition_status, address_county)
+                    VALUES(@service_episode_id, @gender, @age, @mil_affiliation, @current_status, @branch, @service_era, @transition_status, @address_county)
 
 "@  
                 $sql_error = $null
@@ -483,3 +484,6 @@ function main {
 }
 
 main
+ 
+
+
