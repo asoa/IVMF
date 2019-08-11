@@ -1,6 +1,5 @@
-$PATH = 'C:\Users\vagrant\Documents'
-#$FILE_PATH = '{0}\se_final_20190430_copy_test.csv' -f $PATH
-$FILE_PATH = '{0}\se_final_20190430_copy.csv' -f $PATH
+﻿$PATH = 'C:\Users\vagrant\Documents'
+$FILE_PATH = '{0}\sql_serves_input.csv' -f $PATH
 $SQL_SERVER = 'localhost'
 $DebugPreference = 'Continue'  # change to SilentlyContinue to remove debugging messages
 $LOG_FILE_SUCCESS = '{0}\ETL_log_success_{1}.log' -f $PATH, (Get-Date).ToString("yyyy-MM-dd-HHmmss")
@@ -12,7 +11,7 @@ Function check_record_exist {
     # sends query to db to check if $id exists
     Param ([string] $id)
     $sqlcmd = @"
-        USE SERVES
+        USE SERVES2
         IF EXISTS (SELECT service_episode_id FROM se_episode WHERE service_episode_id = '$id')
         select 1
         ELSE 
@@ -58,7 +57,7 @@ function update_database {
         $rows = Import-Csv -Path $FILE_PATH 
     }
 
-    Process {
+    Process {        
         $row_number = 1
         $rows | ForEach-Object  {  # iterate over each record in csv object
             $row_number++
@@ -69,7 +68,7 @@ function update_database {
             # TODO add condition check new last_updated > old last_updated
             if ($exist -eq 1) {  # service_episoded_id is already in db, updated the network/org or both
                 $sqlcmd = @"
-                    USE SERVES
+                    USE SERVES2
                     Declare @sp_result INT
                     EXEC check_net_org_same '$($_.Service_Episode_ID)', '$($_.currentnetwork)', '$($_.Current_Organization)', @result = @sp_result OUTPUT
                     select @sp_result
@@ -86,7 +85,7 @@ function update_database {
 
                 } elseif($result -eq 1) {  # net changed, org same
                     $sqlcmd = @"
-                        USE SERVES
+                        USE SERVES2
                         Declare @sp_result INT
                         EXEC update_network '$($_.Service_Episode_ID)', '$($_.currentnetwork)', '$($_.originalnetwork)', '$($_.Current_Organization)', '$($_.Originating_Organization)', '$last_updated_', @result = @sp_result OUTPUT
                         SELECT @sp_result
@@ -97,7 +96,7 @@ function update_database {
                     Write-Debug ('Attempted to update network_episode table with return code: {0}' -f $result)
                 } elseif($result -eq 2) {  # net same, org changed
                     $sqlcmd = @"
-                        USE SERVES
+                        USE SERVES2
                         Declare @sp_result INT
                         EXEC update_org '$($_.Service_Episode_ID)', '$($_.Current_Organization)', '$($_.Originating_Organization)', '$last_updated_', @result = @sp_result OUTPUT
                         SELECT @sp_result
@@ -109,7 +108,7 @@ function update_database {
 
                 } else {  # both net and org changed
                     $sqlcmd = @"
-                        USE SERVES
+                        USE SERVES2
                         Declare @sp_result INT
                         EXEC update_network_org '$($_.Service_Episode_ID)', '$($_.currentnetwork)', '$($_.originalnetwork)', '$($_.Current_Organization)', '$($_.Originating_Organization)', '$last_updated_', @result = @sp_result OUTPUT
                         SELECT @sp_result
@@ -123,13 +122,14 @@ function update_database {
             }
             elseif ($exist -eq 0) {  # if record isn't in db, insert it
                 $last_updated_ = Get-Date $_.Last_Updated -Format 'yyyy-MM-dd hh:mm:ss'  # transform source date string to sql datetime2 format
+                # [int]$_age = $_.Age
                 $episode_insert = @"
-                    USE SERVES
+                    USE SERVES2
                   
                     --episode 
                     Declare @service_episode_id nvarchar(50) = '$($_.Service_Episode_ID)'
                     Declare @client_id nvarchar(50) = '$($_.Client_ID)'
-                    Declare @outcomegrouped nvarchar(50) = '$($_.outcomegrouped)'
+                    Declare @outcomegrouped nvarchar(100) = '$($_.outcomegrouped)'
                     Declare @service_type_grouped nvarchar(50) = '$($_.Service_Type_Grouped)'
                     Declare @source nvarchar(50) = '$($_.Source)'
                     Declare @started_with nvarchar(50) = '$($_.Started_With)'
@@ -138,11 +138,12 @@ function update_database {
                     Declare @resolution nvarchar(50) = '$($_.Resolution)'
                     Declare @network_scope nvarchar(50) = '$($_.Network_Scope)'
                     Declare @status varchar(20) = '$($_.Status)'
-                    Declare @last_updated datetime2 = '$last_updated_'
+                    Declare @last_updated smalldatetime = '$last_updated_'
                     
 
                     --demographic 
                     Declare @age int = '$($_.Age)'
+                    --Declare @age int = '$age_'
                     Declare @mil_affiliation varchar(25) = '$($_.Military_Affiliation)'
                     Declare @branch varchar(25) = '$($_.Branch)'
                     Declare @gender varchar(10) = '$($_.Gender)'
@@ -176,19 +177,19 @@ function update_database {
                 else {write_log ('{0}: Inserted to db' -f $_.Service_Episode_ID) 0 $row_number}
 
                 $episode_date_metrics = @"
-                    USE SERVES
+                    USE SERVES2
 
                     --se_episode_date
                     Declare @service_episode_id nvarchar(50) = '$($_.Service_Episode_ID)'
                     Declare @datecreated_y int = '$($_.datecreated_y)'
-                    Declare @datecreated_m int = '$($_.datecreated_m)'
-                    Declare @datecreated_calqtr int = '$($_.datecreated_calqtr)'
+                    Declare @datecreated_m varchar(3) = '$($_.datecreated_m)'
+                    Declare @datecreated_calqtr varchar(2) = '$($_.datecreated_calqtr)'
                     Declare @dateclosed_y int = '$($_.dateclosed_y)'
-                    Declare @dateclosed_m int = '$($_.dateclosed_m)'
-                    Declare @dateclosed_calqtr int = '$($_.dateclosed_calqtr)'
-                    Declare @qtrcreated float(24) = '$($_.qtrcreated)'
-                    Declare @qtrclosed float(24) = '$($_.qtrclosed)'
-                    Declare @last_updated datetime2 = '$last_updated_'
+                    Declare @dateclosed_m varchar(3) = '$($_.dateclosed_m)'
+                    Declare @dateclosed_calqtr varchar(2) = '$($_.dateclosed_calqtr)'
+                    Declare @qtrcreated varchar(20) = '$($_.qtrcreated)'
+                    Declare @qtrclosed varchar(20) = '$($_.qtrclosed)'
+                    Declare @last_updated smalldatetime = '$last_updated_'
 
                     --se_episode_metrics
                     Declare @duration_service_episode real = '$($_.Duration_of_Service_Episode__day)'
@@ -210,7 +211,7 @@ function update_database {
                 $current_organization_ = $_.Current_Organization.Replace("'",'"')
                 $originating_organization = $_.Originating_Organization.Replace("'",'"')
                 $sqlcmd = @"
-                    USE SERVES
+                    USE SERVES2
 
                     --network_episode
                     Declare @network_episode_id int = NULL
@@ -218,7 +219,7 @@ function update_database {
                     Declare @network_id int = '$($_.currentnetwork)'
                     Declare @originalnetwork int = '$($_.originalnetwork)'    
                     Declare @network_organization_id int = NULL 
-                    Declare @last_updated datetime2 = '$last_updated_'        
+                    Declare @last_updated smalldatetime = '$last_updated_'        
 
                     INSERT INTO se_network_episode(service_episode_id, network_id, originalnetwork, last_updated) 
                     VALUES(@service_episode_id, @network_id, @originalnetwork, @last_updated)
@@ -245,10 +246,10 @@ function update_database {
                 Write-Debug ('{0}: {1}' -f $_.Service_Episode_ID, "Not inserted to db")
                 $log_string = ('{0} {1} {2}: {3}' -f $_.Service_Episode_ID,$_.cleaned2ob,$_.flag_clientntwk,'Not inserted to db')
                 write_log $log_string 1 $row_number
-            }
+            }           
         }
-    
     }
+    
     
 } # end update_database
 
@@ -263,7 +264,7 @@ function init_db {
 
     # get tablenames from db
     $sqlcmd = @"
-        USE SERVES
+        USE SERVES2
         SELECT table_name [name]
         FROM INFORMATION_SCHEMA.TABLES
         GO
@@ -272,7 +273,7 @@ function init_db {
 
     $table_names | ForEach-Object {
         $drop_table = @"
-            USE SERVES
+            USE SERVES2
             GO
             IF OBJECT_ID('$_', 'U') IS NOT NULL
             DROP TABLE $_
@@ -288,7 +289,7 @@ function drop_tables {
 
     $table_names | ForEach-Object {
         $drop_table = @"
-            USE SERVES
+            USE SERVES2
             GO
             IF OBJECT_ID('$_', 'U') IS NOT NULL
             DROP TABLE $_
@@ -302,12 +303,12 @@ function drop_tables {
 
 function create_tables {
     $create_tables = @"        
-        USE SERVES
+        USE SERVES2
         CREATE TABLE se_episode
         (
             [service_episode_id] NVARCHAR(50) NOT NULL,
             [client_id] NVARCHAR(50) NULL,
-            [outcomegrouped] NVARCHAR(50),
+            [outcomegrouped] NVARCHAR(100),
 	        [service_type_grouped] NVARCHAR(50),
 	        [source] NVARCHAR(50),
 	        [started_with] NVARCHAR(50),
@@ -316,30 +317,28 @@ function create_tables {
 	        [resolution] NVARCHAR(50),
 	        [network_scope] NVARCHAR(50),
 	        [status] VARCHAR(20),
-            [last_updated] DATETIME2
+            [last_updated] smalldatetime
 
 	        CONSTRAINT pk_episode PRIMARY KEY CLUSTERED (service_episode_id) 
         );
         CREATE TABLE se_episode_date
         (
-	        --[episode_date_id] INT IDENTITY(1,1) NOT NULL,
 	        [service_episode_id] NVARCHAR(50) NOT NULL,
 	        [datecreated_y] INT,
-	        [datecreated_m] INT,
-	        [datecreated_calqtr] INT,
+	        [datecreated_m] varchar(3),
+	        [datecreated_calqtr] varchar(2),
 	        [dateclosed_y] INT,
-	        [dateclosed_m] INT,
-	        [dateclosed_calqtr] INT,
-            [qtrcreated] FLOAT(24),
-            [qtrclosed] FLOAT(24),
-            [last_updated] DATETIME2
+	        [dateclosed_m] varchar(3),
+	        [dateclosed_calqtr] varchar(2),
+            [qtrcreated] varchar(20),
+            [qtrclosed] varchar(20),
+            [last_updated] smalldatetime
 
 	        CONSTRAINT pk_episode_date PRIMARY KEY CLUSTERED (service_episode_id),
 	        CONSTRAINT fk_episode_date FOREIGN KEY (service_episode_id) REFERENCES se_episode
         );
         CREATE TABLE se_episode_metrics
         (
-	        --[episode_metrics_id] INT IDENTITY(1,1) NOT NULL,
 	        [service_episode_id] NVARCHAR(50) NOT NULL,
 	        [duration_service_episode] FLOAT(24),
 	        [duration_case_created] FLOAT(24),
@@ -366,7 +365,7 @@ function create_tables {
 	        [service_episode_id] NVARCHAR(50) NOT NULL,
 	        [network_id] INT NOT NULL,
 	        [originalnetwork] INT,
-            [last_updated] DATETIME2
+            [last_updated] smalldatetime
 
 	        CONSTRAINT pk_network_episode PRIMARY KEY CLUSTERED (network_episode_id),
 	        CONSTRAINT fk_network_episode1 FOREIGN KEY (service_episode_id) REFERENCES se_episode,
@@ -406,7 +405,7 @@ function create_tables {
 	        [network_episode_id] INT NOT NULL,
 	        [organization_name] NVARCHAR(100) NULL,
 	        [originating_organization] NVARCHAR(100) NULL,
-            [last_updated] DATETIME2
+            [last_updated] smalldatetime
 
 	        CONSTRAINT pk_network_organization PRIMARY KEY CLUSTERED (network_organization_id),
 	        CONSTRAINT fk_network_organization1 FOREIGN KEY (network_episode_id) REFERENCES se_network_episode,
@@ -439,7 +438,8 @@ function create_tables {
             [current_status] NVARCHAR(50) NULL,
             [branch] VARCHAR(25) NULL,
             [service_era] VARCHAR(100) NULL,
-            [transition_status] VARCHAR(50) NULL
+            [transition_status] VARCHAR(50) NULL,
+            [address_county] varchar(50)
 
 	        CONSTRAINT fk_demographic FOREIGN KEY(service_episode_id) REFERENCES se_episode
         );
@@ -449,7 +449,7 @@ function create_tables {
     Invoke-Sqlcmd -Query $create_tables -ServerInstance $SQL_SERVER 
       
     $sqlcmd = @"
-        USE SERVES
+        USE SERVES2
         SELECT table_name [name]
         FROM INFORMATION_SCHEMA.TABLES
         GO
@@ -463,7 +463,7 @@ function create_tables {
 
 
 function generate_report {
-    Write-Host 'Generating Report'
+    #Write-Host 'Generating Report'
     #TODO
 }
 
@@ -473,7 +473,6 @@ function main {
         1. Update Database
         2. Drop Tables
         3. Create tables
-        4. Generate Report 'a'
         
         >>
 "@
